@@ -1,0 +1,741 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from scipy.ndimage import convolve
+import logging
+from tqdm import tqdm
+import os
+import argparse
+import sys
+from scipy.signal import welch, find_peaks
+from scipy.stats import pearsonr
+
+# ---------------------------
+# Configuration and Logging Setup
+# ---------------------------
+
+def setup_logging(output_dir, log_level=logging.INFO):
+    log_file = os.path.join(output_dir, "simulation.log")
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    logging.info(f"Logging initialized. Log file: {log_file}")
+
+# ---------------------------
+# Curvature and Quantum Functions
+# ---------------------------
+
+def compute_curvature(angles, area):
+    angular_sum = np.sum(angles)
+    angular_defect = angular_sum - np.pi
+    curvature = angular_defect / area
+    return curvature
+
+def potential_energy(edge_lengths, rest_lengths, stiffnesses):
+    energy = 0.5 * stiffnesses * (edge_lengths - rest_lengths)**2
+    return np.sum(energy)
+
+def compute_decoherence(lattice_curvature, base_decoherence, sensitivity_factor_grid):
+    decoherence_grid = base_decoherence + sensitivity_factor_grid * np.abs(lattice_curvature)
+    return decoherence_grid
+
+def compute_fidelity(lattice_curvature, base_fidelity, sensitivity_factor_grid):
+    fidelity_grid = base_fidelity - sensitivity_factor_grid * np.abs(lattice_curvature)
+    fidelity_grid = np.clip(fidelity_grid, 0, 1)
+    return fidelity_grid
+
+def quantum_lattice_integration(lattice_curvature, base_entanglement, perturbation_scale, nonlinear_mode="linear"):
+    if nonlinear_mode == "linear":
+        entanglement_grid = base_entanglement + perturbation_scale * lattice_curvature
+    elif nonlinear_mode == "quadratic":
+        entanglement_grid = base_entanglement + perturbation_scale * (lattice_curvature**2)
+    elif nonlinear_mode == "exponential":
+        entanglement_grid = base_entanglement + perturbation_scale * (np.exp(lattice_curvature) - 1.0)
+    else:
+        logging.warning(f"Unknown nonlinear_mode '{nonlinear_mode}'. Using linear.")
+        entanglement_grid = base_entanglement + perturbation_scale * lattice_curvature
+    return entanglement_grid
+
+# ---------------------------
+# Additional Initialization Function
+# ---------------------------
+
+def smooth_initialize_path(curvature_lattice, path, peak_value=0.05):
+    length = len(path)
+    for i, (r, c) in enumerate(path):
+        val = peak_value * np.exp(-0.05 * i)
+        curvature_lattice[r, c] = val
+
+# ---------------------------
+# Curvature Distribution Mechanisms
+# ---------------------------
+
+def diffuse_curvature_custom(curvature_lattice, diffusion_rate=0.2, boundary_mode='reflect', dimension=2):
+    if dimension == 2:
+        kernel = np.array([[1, 1, 1],
+                           [1, 0, 1],
+                           [1, 1, 1]], dtype=float)
+    else:
+        kernel = np.array([[[0,1,0],
+                             [1,1,1],
+                             [0,1,0]],
+                           
+                            [[1,1,1],
+                             [1,0,1],
+                             [1,1,1]],
+                            
+                            [[0,1,0],
+                             [1,1,1],
+                             [0,1,0]]], dtype=float)
+
+    mode = 'wrap'
+    if boundary_mode == 'reflect':
+        mode = 'reflect'
+    elif boundary_mode == 'open':
+        mode = 'constant'
+
+    neighbor_sum = convolve(curvature_lattice, kernel, mode=mode, cval=0.0)
+    neighbor_count = convolve(np.ones_like(curvature_lattice), kernel, mode=mode, cval=0.0)
+    avg_neighbor = np.divide(neighbor_sum, neighbor_count, out=np.zeros_like(neighbor_sum), where=neighbor_count != 0)
+    new_curvature = curvature_lattice + diffusion_rate * (avg_neighbor - curvature_lattice)
+    return new_curvature
+
+def redistribute_curvature_vectorized(curvature_lattice, threshold=0.08):
+    excess_mask = curvature_lattice > threshold
+    excess = curvature_lattice[excess_mask] - threshold
+    curvature_lattice[excess_mask] = threshold
+
+    excess_distribution = np.zeros_like(curvature_lattice)
+    excess_distribution[excess_mask] = excess
+
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]], dtype=float)
+    distributed_excess = convolve(excess_distribution, kernel, mode='wrap')
+    neighbor_count = convolve(np.ones_like(curvature_lattice), kernel, mode='wrap')
+    excess_per_neighbor = np.divide(distributed_excess, neighbor_count, out=np.zeros_like(distributed_excess), where=neighbor_count != 0)
+    curvature_lattice += excess_per_neighbor
+    return curvature_lattice
+
+def cap_curvature_vectorized(curvature_lattice, max_curvature=0.1):
+    np.clip(curvature_lattice, 0, max_curvature, out=curvature_lattice)
+    return curvature_lattice
+
+def add_random_fluctuations_vectorized(curvature_lattice, fluctuation_magnitude=0.005):
+    random_noise = np.random.uniform(-fluctuation_magnitude, fluctuation_magnitude, curvature_lattice.shape)
+    curvature_lattice += random_noise
+    np.clip(curvature_lattice, 0, 0.1, out=curvature_lattice)
+    return curvature_lattice
+
+# ---------------------------
+# Quantum Property Calculation (Vectorized)
+# ---------------------------
+
+def simulate_quantum_properties_along_path_vectorized(
+    curvature_lattice, path, base_entanglement, base_decoherence, base_fidelity,
+    perturbation_scale, sensitivity_factor_grid, nonlinear_mode="linear"
+):
+    if not path:
+        return [], [], []
+
+    rows, cols = zip(*path)
+    rows = np.array(rows)
+    cols = np.array(cols)
+    curvature = curvature_lattice[rows, cols]
+
+    if nonlinear_mode == "linear":
+        entanglement = base_entanglement + perturbation_scale * curvature
+    elif nonlinear_mode == "quadratic":
+        entanglement = base_entanglement + perturbation_scale * (curvature**2)
+    elif nonlinear_mode == "exponential":
+        entanglement = base_entanglement + perturbation_scale * (np.exp(curvature) - 1.0)
+    else:
+        logging.warning(f"Unknown nonlinear_mode '{nonlinear_mode}', using linear.")
+        entanglement = base_entanglement + perturbation_scale * curvature
+
+    decoherence = base_decoherence + sensitivity_factor_grid[rows, cols] * np.abs(curvature)
+    fidelity = base_fidelity - sensitivity_factor_grid[rows, cols] * np.abs(curvature)
+    fidelity = np.clip(fidelity, 0, 1)
+
+    return entanglement.tolist(), decoherence.tolist(), fidelity.tolist()
+
+# ---------------------------
+# Visualization Functions
+# ---------------------------
+
+def visualize_curvature_and_path(curvature_lattice, path, points_A_B, save_fig=False, output_dir="", dimension=2):
+    try:
+        fig, ax = plt.subplots(figsize=(10, 10))
+        if dimension == 3:
+            slice_2d = curvature_lattice[:,:,0]
+            cax = ax.imshow(slice_2d, cmap="coolwarm", interpolation="nearest")
+        else:
+            cax = ax.imshow(curvature_lattice, cmap="coolwarm", interpolation="nearest")
+        fig.colorbar(cax, ax=ax, label="Curvature")
+
+        if path and dimension == 2:
+            path_rows, path_cols = zip(*path)
+            ax.plot(path_cols, path_rows, marker="o", color="black", label="Folding Path", markersize=2)
+
+        if points_A_B:
+            if dimension == 2:
+                (A_row, A_col), (B_row, B_col) = points_A_B
+                ax.scatter([A_col], [A_row], color="green", s=100, label="Point A (Start)", edgecolors='black')
+                ax.scatter([B_col], [B_row], color="red", s=100, label="Point B (End)", edgecolors='black')
+            else:
+                (A_x, A_y, A_z), (B_x, B_y, B_z) = points_A_B
+                ax.scatter([A_y], [A_x], color="green", s=100, label="Point A (proj)", edgecolors='black')
+                ax.scatter([B_y], [B_x], color="red", s=100, label="Point B (proj)", edgecolors='black')
+
+        ax.set_title("Curvature Lattice and Folding Path")
+        ax.set_xlabel("Columns")
+        ax.set_ylabel("Rows")
+        ax.legend(loc='upper right', markerscale=2)
+        plt.tight_layout()
+
+        if save_fig and output_dir:
+            fig_path = os.path.join(output_dir, "curvature_and_path.png")
+            plt.savefig(fig_path)
+            logging.info(f"Curvature and path visualization saved to {fig_path}")
+
+        plt.show()
+    except Exception as e:
+        logging.error(f"Error in visualize_curvature_and_path: {e}")
+
+def visualize_3d_curvature(curvature_lattice, save_fig=False, output_dir=""):
+    fig = plt.figure(figsize=(10,10))
+    ax = fig.add_subplot(111, projection='3d')
+    shape = curvature_lattice.shape
+    if curvature_lattice.ndim == 3:
+        X, Y, Z = shape
+        x_coords, y_coords, z_coords = np.indices((X,Y,Z))
+        x_flat = x_coords.flatten()
+        y_flat = y_coords.flatten()
+        z_flat = z_coords.flatten()
+        curv_flat = curvature_lattice.flatten()
+        sample_size = min(len(curv_flat), 5000)
+        indices = np.random.choice(len(curv_flat), sample_size, replace=False)
+        x_s = x_flat[indices]
+        y_s = y_flat[indices]
+        z_s = z_flat[indices]
+        c_s = curv_flat[indices]
+        ax.scatter(x_s, y_s, z_s, c=c_s, cmap='coolwarm', marker='o', alpha=0.6)
+        ax.set_title("3D Curvature Lattice (Sampled)")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+    else:
+        rows, cols = shape
+        X, Y = np.meshgrid(np.arange(cols), np.arange(rows))
+        ax.plot_surface(X, Y, curvature_lattice, cmap='coolwarm', edgecolor='none', rcount=50, ccount=50)
+        ax.set_title("2D Curvature as 3D Surface")
+        ax.set_xlabel("Columns")
+        ax.set_ylabel("Rows")
+        ax.set_zlabel("Curvature")
+
+    plt.tight_layout()
+    if save_fig and output_dir:
+        fig_path = os.path.join(output_dir, "3d_curvature_visualization.png")
+        plt.savefig(fig_path)
+        logging.info(f"3D curvature visualization saved to {fig_path}")
+
+    plt.show()
+
+def visualize_quantum_properties(path, entanglement_path, decoherence_path, fidelity_path, save_fig=False, output_dir=""):
+    if not path or len(entanglement_path) == 0:
+        logging.warning("No path or empty quantum property data to plot.")
+        return
+    try:
+        steps = list(range(len(path)))
+        plt.figure(figsize=(12, 8))
+        plt.plot(steps, entanglement_path, marker="o", label="Entanglement Entropy", color="blue")
+        plt.plot(steps, decoherence_path, marker="o", label="Decoherence Rate", color="red")
+        plt.plot(steps, fidelity_path, marker="o", label="Quantum Fidelity", color="green")
+        plt.title("Quantum Properties Along the Folded Path")
+        plt.xlabel("Path Steps")
+        plt.ylabel("Quantum Properties")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+
+        if save_fig and output_dir:
+            fig_path = os.path.join(output_dir, "quantum_properties_along_path.png")
+            plt.savefig(fig_path)
+            logging.info(f"Quantum properties visualization saved to {fig_path}")
+
+        plt.show()
+    except Exception as e:
+        logging.error(f"Error in visualize_quantum_properties: {e}")
+
+def visualize_temporal_evolution(steps, entanglement_history, decoherence_history, fidelity_history, avg_curvature_history, save_fig=False, output_dir=""):
+    if len(steps) == 0:
+        logging.warning("No temporal data to plot.")
+        return
+    try:
+        plt.figure(figsize=(14, 18))
+        plt.subplot(4, 1, 1)
+        plt.plot(steps, avg_curvature_history, marker="o", color="orange")
+        plt.title("Temporal Evolution of Average Curvature Along Path")
+        plt.xlabel("Timestep")
+        plt.ylabel("Average Curvature")
+        plt.grid(True)
+
+        plt.subplot(4, 1, 2)
+        plt.plot(steps, entanglement_history, marker="o", color="blue")
+        plt.title("Temporal Evolution of Average Entanglement Entropy")
+        plt.xlabel("Timestep")
+        plt.ylabel("Entanglement Entropy")
+        plt.grid(True)
+
+        plt.subplot(4, 1, 3)
+        plt.plot(steps, decoherence_history, marker="o", color="red")
+        plt.title("Temporal Evolution of Average Decoherence Rate")
+        plt.xlabel("Timestep")
+        plt.ylabel("Decoherence Rate")
+        plt.grid(True)
+
+        plt.subplot(4, 1, 4)
+        plt.plot(steps, fidelity_history, marker="o", color="green")
+        plt.title("Temporal Evolution of Average Quantum Fidelity")
+        plt.xlabel("Timestep")
+        plt.ylabel("Quantum Fidelity")
+        plt.grid(True)
+
+        plt.tight_layout()
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(avg_curvature_history, entanglement_history, color='purple', alpha=0.6)
+        plt.title("Correlation between Curvature and Entanglement")
+        plt.xlabel("Average Curvature")
+        plt.ylabel("Average Entanglement")
+        plt.grid(True)
+
+        if save_fig and output_dir:
+            fig_path1 = os.path.join(output_dir, "temporal_evolution.png")
+            fig_path2 = os.path.join(output_dir, "curvature_entanglement_correlation.png")
+            plt.savefig(fig_path1)
+            plt.savefig(fig_path2)
+            logging.info(f"Temporal evolution visualization saved to {fig_path1} and {fig_path2}")
+
+        plt.show()
+    except Exception as e:
+        logging.error(f"Error in visualize_temporal_evolution: {e}")
+
+def analyze_frequency_spectrum(data, sampling_rate=1.0, output_dir="", label="entanglement"):
+    data = np.array(data)
+    if len(data) == 0:
+        logging.warning("No data to analyze frequency spectrum.")
+        return
+    freqs, psd = welch(data, fs=sampling_rate, nperseg=min(len(data), 256))
+    plt.figure(figsize=(10,6))
+    plt.semilogy(freqs, psd, label=f"PSD of {label}")
+    plt.title(f"Frequency Analysis of {label.capitalize()} Over Time")
+    plt.xlabel("Frequency (1/Timestep)")
+    plt.ylabel("Power Spectral Density")
+    plt.grid(True)
+    plt.legend()
+
+    if output_dir:
+        fname = os.path.join(output_dir, f"{label}_frequency_analysis.png")
+        plt.savefig(fname)
+        logging.info(f"Frequency spectrum for {label} saved to {fname}")
+
+    plt.show()
+
+    peaks, _ = find_peaks(psd, height=np.mean(psd)*1.5)
+    if len(peaks) > 0:
+        logging.info(f"Resonant frequencies detected for {label}: {freqs[peaks]}")
+    else:
+        logging.info(f"No prominent resonant frequencies detected for {label}.")
+
+def analyze_correlation(x_data, y_data, label_x="Curvature", label_y="Entanglement", output_dir=""):
+    if len(x_data) == 0 or len(y_data) == 0:
+        logging.warning("No data to compute correlation.")
+        return
+    x_data = np.array(x_data)
+    y_data = np.array(y_data)
+    corr, p_value = pearsonr(x_data, y_data)
+
+    plt.figure(figsize=(8,6))
+    plt.scatter(x_data, y_data, color='blue', alpha=0.6)
+    plt.title(f"{label_y} vs {label_x}")
+    plt.xlabel(label_x)
+    plt.ylabel(label_y)
+    plt.grid(True)
+    plt.text(0.1, 0.9, f"Corr={corr:.3f}, p={p_value:.3e}", transform=plt.gca().transAxes)
+    if output_dir:
+        fname = os.path.join(output_dir, f"{label_y}_{label_x}_correlation.png")
+        plt.savefig(fname)
+        logging.info(f"Correlation plot saved to {fname}")
+    plt.show()
+
+    logging.info(f"Pearson correlation between {label_x} and {label_y}: {corr:.3f} (p={p_value:.3e})")
+
+# ---------------------------
+# Advanced Features Placeholders
+# ---------------------------
+
+def topological_analysis(curvature_lattice):
+    """
+    Placeholder for computing topological invariants.
+    E.g., Count how many regions exceed a certain threshold.
+    In a real scenario, one might compute Chern numbers or other invariants.
+    """
+    threshold = 0.05
+    count = np.sum(curvature_lattice > threshold)
+    logging.info(f"Topological count (regions > {threshold}): {count}")
+
+def adaptive_refinement(curvature_lattice):
+    """
+    Placeholder for adaptive mesh refinement.
+    Identify high curvature regions and refine them.
+    Actual refinement would involve creating a finer mesh in those regions.
+    """
+    threshold = 0.09
+    high_curv_mask = curvature_lattice > threshold
+    if np.any(high_curv_mask):
+        logging.info("High curvature detected. Would refine the mesh here.")
+    # Actual refinement would require re-building the lattice with higher resolution locally.
+
+def save_simulation_data(curvature_lattice, ent_history, decoh_history, fid_history, avg_curv_history, output_dir):
+    """
+    Save simulation data for machine learning training.
+    Another script could then load this data and train a neural network.
+    """
+    data_file = os.path.join(output_dir, "simulation_data.npz")
+    np.savez(data_file, curvature=curvature_lattice, ent=ent_history, decoh=decoh_history, fid=fid_history, curv=avg_curv_history)
+    logging.info(f"Simulation data saved for ML at {data_file}")
+
+# ---------------------------
+# Simulation Functions
+# ---------------------------
+
+def build_path(points_A_B, dimension=2):
+    if dimension == 2:
+        (A_row, A_col), (B_row, B_col) = points_A_B
+        row_range = np.linspace(A_row, B_row, abs(B_row - A_row) + 1, dtype=int)
+        col_range = np.linspace(A_col, B_col, abs(B_col - A_col) + 1, dtype=int)
+        path = list(zip(row_range, col_range))
+    else:
+        (A_x, A_y, A_z), (B_x, B_y, B_z) = points_A_B
+        steps = max(abs(B_x - A_x), abs(B_y - A_y), abs(B_z - A_z)) + 1
+        x_range = np.linspace(A_x, B_x, steps, dtype=int)
+        y_range = np.linspace(A_y, B_y, steps, dtype=int)
+        z_range = np.linspace(A_z, B_z, steps, dtype=int)
+        path = list(zip(x_range, y_range, z_range))
+    return path
+
+def simulate_triangular_folding(points_A_B, lattice_size, curvature_magnitude, dimension=2):
+    if dimension == 2:
+        rows, cols = lattice_size
+        curvature_lattice = np.zeros((rows, cols))
+        path = build_path(points_A_B, dimension=2)
+        smooth_initialize_path(curvature_lattice, path, peak_value=curvature_magnitude)
+        return curvature_lattice, path
+    else:
+        X, Y, Z = lattice_size
+        curvature_lattice = np.zeros((X, Y, Z))
+        path = build_path(points_A_B, dimension=3)
+        for i, (x, y, z) in enumerate(path):
+            val = curvature_magnitude * np.exp(-0.05 * i)
+            curvature_lattice[x,y,z] = val
+        return curvature_lattice, path
+
+def simulate_temporal_evolution(
+    curvature_lattice, path, timesteps, curvature_change, base_entanglement,
+    base_decoherence, base_fidelity, perturbation_scale, sensitivity_factor,
+    output_dir,
+    nonlinear_mode="linear",
+    feedback=False,
+    boundary_mode='reflect',
+    dimension=2,
+    enable_quantum_feedback=False,
+    feedback_strength=0.01,
+    external_field=False,
+    add_noise=False
+):
+    entanglement_history = []
+    decoherence_history = []
+    fidelity_history = []
+    avg_curvature_history = []
+
+    if not path:
+        logging.warning("Path is empty. No simulation will be run.")
+        return [], [], [], [], []
+
+    shape = curvature_lattice.shape
+    if dimension == 2:
+        rows_count, cols_count = shape
+        sensitivity_factor_grid = sensitivity_factor * (1.0 + 0.1 * (np.linspace(0, 1, rows_count)[:, None]))
+        sensitivity_factor_grid = np.tile(sensitivity_factor_grid, (1, cols_count))
+    else:
+        X, Y, Z = shape
+        sf_2d = sensitivity_factor * (1.0 + 0.1 * (np.linspace(0, 1, X)[:, None]))
+        sf_2d = np.tile(sf_2d, (1, Y))
+        sensitivity_factor_grid = np.repeat(sf_2d[:, :, np.newaxis], Z, axis=2)
+
+    path_array = np.array(path)
+    temporal_evolution_file = os.path.join(output_dir, "temporal_evolution.txt")
+    with open(temporal_evolution_file, 'w') as f:
+        f.write("Timestep,Avg_Entanglement,Avg_Decoherence,Avg_Fidelity,Avg_Curvature\n")
+
+    logging.info("Starting temporal evolution simulation...")
+    prev_entanglement_path_values = np.zeros(len(path), dtype=float)
+
+    for timestep in tqdm(range(1, timesteps + 1), desc="Simulating", unit="step"):
+        curvature_fluctuation = curvature_change * np.sin(2 * np.pi * timestep / timesteps)
+        random_noise = np.random.uniform(-curvature_change, curvature_change, len(path))
+        curvature_updates = curvature_fluctuation + random_noise
+
+        if external_field:
+            field_value = 0.01 * np.sin(2 * np.pi * timestep / timesteps)
+            curvature_updates += field_value
+
+        if dimension == 2:
+            for i, (r,c) in enumerate(path):
+                val = curvature_lattice[r,c] + curvature_updates[i]
+                curvature_lattice[r,c] = np.clip(val, 0, 0.1)
+        else:
+            for i, (x,y,z) in enumerate(path):
+                val = curvature_lattice[x,y,z] + curvature_updates[i]
+                curvature_lattice[x,y,z] = np.clip(val, 0, 0.1)
+
+        curvature_lattice = diffuse_curvature_custom(curvature_lattice, diffusion_rate=0.2, boundary_mode=boundary_mode, dimension=dimension)
+        curvature_lattice = redistribute_curvature_vectorized(curvature_lattice, threshold=0.08)
+        curvature_lattice = cap_curvature_vectorized(curvature_lattice, max_curvature=0.1)
+        curvature_lattice = add_random_fluctuations_vectorized(curvature_lattice, fluctuation_magnitude=0.005)
+
+        if dimension == 2:
+            entanglement_path, decoherence_path, fidelity_path = simulate_quantum_properties_along_path_vectorized(
+                curvature_lattice, path, base_entanglement, base_decoherence, base_fidelity,
+                perturbation_scale, sensitivity_factor_grid, nonlinear_mode=nonlinear_mode
+            )
+        else:
+            proj_path = [(x,y) for (x,y,z) in path]
+            entanglement_path, decoherence_path, fidelity_path = simulate_quantum_properties_along_path_vectorized(
+                curvature_lattice[:,:,0], proj_path, base_entanglement, base_decoherence, base_fidelity,
+                perturbation_scale, sensitivity_factor_grid[:,:,0], nonlinear_mode=nonlinear_mode
+            )
+
+        if add_noise and len(entanglement_path) > 0:
+            noise = np.random.normal(0, 0.001, size=len(entanglement_path))
+            entanglement_path = (np.array(entanglement_path) + noise).tolist()
+
+        if enable_quantum_feedback and len(entanglement_path) > 0:
+            for i, (r,c) in enumerate(path):
+                curvature_lattice[r,c] += feedback_strength * entanglement_path[i]
+            np.clip(curvature_lattice, 0, 0.1, out=curvature_lattice)
+
+        if len(entanglement_path) > 0:
+            avg_entanglement = np.mean(entanglement_path)
+            avg_decoherence = np.mean(decoherence_path)
+            avg_fidelity = np.mean(fidelity_path)
+            if dimension == 2:
+                avg_curvature = np.mean(curvature_lattice[path_array[:,0], path_array[:,1]])
+            else:
+                avg_curvature = np.mean(curvature_lattice[path_array[:,0], path_array[:,1], path_array[:,2]])
+        else:
+            avg_entanglement = 0.0
+            avg_decoherence = 0.0
+            avg_fidelity = 0.0
+            avg_curvature = 0.0
+
+        entanglement_history.append(avg_entanglement)
+        decoherence_history.append(avg_decoherence)
+        fidelity_history.append(avg_fidelity)
+        avg_curvature_history.append(avg_curvature)
+        prev_entanglement_path_values = np.array(entanglement_path) if len(entanglement_path)>0 else np.zeros(len(path))
+
+        if timestep % 25 == 0:
+            log_message = (
+                f"Timestep {timestep}: Avg Entanglement = {avg_entanglement:.4f}, "
+                f"Avg Decoherence = {avg_decoherence:.4f}, Avg Fidelity = {avg_fidelity:.4f}, "
+                f"Avg Curvature = {avg_curvature:.4f}"
+            )
+            logging.info(log_message)
+            with open(temporal_evolution_file, 'a') as f:
+                f.write(f"{timestep},{avg_entanglement:.4f},{avg_decoherence:.4f},"
+                        f"{avg_fidelity:.4f},{avg_curvature:.4f}\n")
+
+    # After simulation, do topological analysis and adaptive refinement as demonstration:
+    topological_analysis(curvature_lattice)
+    adaptive_refinement(curvature_lattice)
+    save_simulation_data(curvature_lattice, entanglement_history, decoherence_history, fidelity_history, avg_curvature_history, output_dir)
+
+    logging.info("Temporal evolution simulation completed.")
+    steps = list(range(1, timesteps + 1))
+    return steps, entanglement_history, decoherence_history, fidelity_history, avg_curvature_history
+
+# ---------------------------
+# Data Saving Functions
+# ---------------------------
+
+def save_curvature_lattice(curvature_lattice, output_dir, timestep=0):
+    filename = f"curvature_lattice_timestep_{timestep}.txt" if timestep else "curvature_lattice_initial.txt"
+    curvature_file = os.path.join(output_dir, filename)
+    np.savetxt(curvature_file, curvature_lattice.reshape(-1), fmt='%.4f')
+    logging.info(f"Curvature lattice saved to {curvature_file}")
+
+def save_quantum_properties_initial(path, entanglement_path, decoherence_path, fidelity_path, output_dir):
+    quantum_properties_file = os.path.join(output_dir, "quantum_properties_initial.txt")
+    with open(quantum_properties_file, 'w') as f:
+        if not path:
+            return
+        dim = len(path[0])
+        coord_headers = ["X","Y","Z"][:dim]
+        f.write("Step," + ",".join(coord_headers) + ",Entanglement,Decoherence,Fidelity\n")
+        for i, coords in enumerate(path):
+            coords_str = ",".join(map(str, coords))
+            f.write(f"{i},{coords_str},{entanglement_path[i]:.4f},{decoherence_path[i]:.4f},{fidelity_path[i]:.4f}\n")
+    logging.info(f"Initial quantum properties saved to {quantum_properties_file}")
+
+# ---------------------------
+# Main Simulation Execution
+# ---------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Quantum Curvature Lattice Simulation with Advanced Features")
+    parser.add_argument('--output_dir', type=str, default=r"D:\notepaddata\Trisingmod", help="Directory to store data and logs.")
+    parser.add_argument('--dimension', type=int, default=2, help="Dimension of the lattice (2 or 3).")
+    parser.add_argument('--lattice_size', type=int, nargs='+', default=[100, 100], help="Lattice size.")
+    parser.add_argument('--points_A_B', type=int, nargs='+', default=[0, 0, 99, 99], help="Coordinates for A and B.")
+    parser.add_argument('--curvature_magnitude', type=float, default=0.05, help="Initial curvature magnitude.")
+    parser.add_argument('--timesteps', type=int, default=500, help="Number of timesteps.")
+    parser.add_argument('--curvature_change', type=float, default=0.02, help="Curvature changes per timestep.")
+    parser.add_argument('--base_entanglement', type=float, default=0.5, help="Base entanglement.")
+    parser.add_argument('--base_decoherence', type=float, default=0.01, help="Base decoherence.")
+    parser.add_argument('--base_fidelity', type=float, default=0.99, help="Base fidelity.")
+    parser.add_argument('--perturbation_scale', type=float, default=0.25, help="Scale for entanglement perturbation.")
+    parser.add_argument('--sensitivity_factor', type=float, default=0.15, help="Sensitivity factor.")
+    parser.add_argument('--analysis', action='store_true', help="Perform frequency and correlation analysis.")
+    parser.add_argument('--nonlinear', choices=['linear','quadratic','exponential'], default='linear', help="Nonlinear mode.")
+    parser.add_argument('--feedback', action='store_true', help="Enable curvature-quantum feedback (simple).")
+    parser.add_argument('--boundary_mode', choices=['wrap', 'reflect', 'open'], default='reflect', help="Boundary mode.")
+    parser.add_argument('--visualize_3d', action='store_true', help="Visualize lattice in 3D.")
+    parser.add_argument('--enable_quantum_feedback', action='store_true', help="Enable dynamic quantum feedback mechanism.")
+    parser.add_argument('--external_field', action='store_true', help="Add external time-varying field.")
+    parser.add_argument('--add_noise', action='store_true', help="Add quantum noise to entanglement.")
+    args = parser.parse_args()
+
+    dimension = args.dimension
+    if dimension == 2:
+        if len(args.lattice_size) != 2:
+            raise ValueError("For dimension=2, provide two integers.")
+        lattice_size = tuple(args.lattice_size)
+        if len(args.points_A_B) != 4:
+            raise ValueError("For dimension=2, provide four integers for points_A_B.")
+        points_A_B = ((args.points_A_B[0], args.points_A_B[1]), (args.points_A_B[2], args.points_A_B[3]))
+    else:
+        if len(args.lattice_size) != 3:
+            raise ValueError("For dimension=3, provide three integers.")
+        lattice_size = tuple(args.lattice_size)
+        if len(args.points_A_B) != 6:
+            raise ValueError("For dimension=3, provide six integers.")
+        points_A_B = ((args.points_A_B[0], args.points_A_B[1], args.points_A_B[2]),
+                      (args.points_A_B[3], args.points_A_B[4], args.points_A_B[5]))
+
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    setup_logging(output_dir, log_level=logging.INFO)
+    logging.info("Starting Enhanced Quantum Curvature Lattice Simulation:")
+    logging.info(f"Dimension: {dimension}")
+    logging.info(f"Lattice Size: {lattice_size}")
+    logging.info(f"Points A and B: {points_A_B}")
+    logging.info(f"Initial Curvature Magnitude: {args.curvature_magnitude}")
+    logging.info(f"Timesteps: {args.timesteps}")
+    logging.info(f"Curvature Change: {args.curvature_change}")
+    logging.info(f"Base Entanglement: {args.base_entanglement}")
+    logging.info(f"Base Decoherence: {args.base_decoherence}")
+    logging.info(f"Base Fidelity: {args.base_fidelity}")
+    logging.info(f"Perturbation Scale: {args.perturbation_scale}")
+    logging.info(f"Sensitivity Factor: {args.sensitivity_factor}")
+    logging.info(f"Nonlinear Mode: {args.nonlinear}")
+    logging.info(f"Feedback Mode (simple): {args.feedback}")
+    logging.info(f"Boundary Mode: {args.boundary_mode}")
+    logging.info(f"Additional Analysis: {args.analysis}")
+    logging.info(f"Visualize 3D: {args.visualize_3d}")
+    logging.info(f"Enable Quantum Feedback: {args.enable_quantum_feedback}")
+    logging.info(f"External Field: {args.external_field}")
+    logging.info(f"Add Noise: {args.add_noise}")
+
+    try:
+        curvature_lattice, path_A_B = simulate_triangular_folding(points_A_B, lattice_size, args.curvature_magnitude, dimension=dimension)
+
+        shape = curvature_lattice.shape
+        if dimension == 2:
+            rows_count, cols_count = shape
+            sensitivity_factor_grid = args.sensitivity_factor * (1.0 + 0.1 * (np.linspace(0, 1, rows_count)[:, None]))
+            sensitivity_factor_grid = np.tile(sensitivity_factor_grid, (1, cols_count))
+            entanglement_path, decoherence_path, fidelity_path = simulate_quantum_properties_along_path_vectorized(
+                curvature_lattice, path_A_B, args.base_entanglement, args.base_decoherence, args.base_fidelity,
+                args.perturbation_scale, sensitivity_factor_grid, nonlinear_mode=args.nonlinear
+            )
+        else:
+            X, Y, Z = shape
+            sf_2d = args.sensitivity_factor * (1.0 + 0.1 * (np.linspace(0, 1, X)[:, None]))
+            sf_2d = np.tile(sf_2d, (1, Y))
+            sensitivity_factor_grid = np.repeat(sf_2d[:, :, np.newaxis], Z, axis=2)
+            proj_path = [(x,y) for (x,y,z) in path_A_B]
+            entanglement_path, decoherence_path, fidelity_path = simulate_quantum_properties_along_path_vectorized(
+                curvature_lattice[:,:,0], proj_path, args.base_entanglement, args.base_decoherence, args.base_fidelity,
+                args.perturbation_scale, sensitivity_factor_grid[:,:,0], nonlinear_mode=args.nonlinear
+            )
+
+        save_curvature_lattice(curvature_lattice, output_dir)
+        save_quantum_properties_initial(path_A_B, entanglement_path, decoherence_path, fidelity_path, output_dir)
+
+        logging.info("\nInitial Quantum Properties Along Path:")
+        for i, (ent, decoh, fid) in enumerate(zip(entanglement_path, decoherence_path, fidelity_path)):
+            logging.debug(f"Step {i}: Entanglement = {ent:.4f}, Decoherence = {decoh:.4f}, Fidelity = {fid:.4f}")
+
+        visualize_curvature_and_path(curvature_lattice, path_A_B, points_A_B, save_fig=True, output_dir=output_dir, dimension=dimension)
+        visualize_quantum_properties(path_A_B, entanglement_path, decoherence_path, fidelity_path, save_fig=True, output_dir=output_dir)
+        visualize_3d_curvature(curvature_lattice, save_fig=True, output_dir=output_dir)
+
+        steps, ent_hist, decoh_hist, fid_hist, avg_curv_hist = simulate_temporal_evolution(
+            curvature_lattice,
+            path_A_B,
+            args.timesteps,
+            args.curvature_change,
+            args.base_entanglement,
+            args.base_decoherence,
+            args.base_fidelity,
+            args.perturbation_scale,
+            args.sensitivity_factor,
+            output_dir,
+            nonlinear_mode=args.nonlinear,
+            feedback=args.feedback,
+            boundary_mode=args.boundary_mode,
+            dimension=dimension,
+            enable_quantum_feedback=args.enable_quantum_feedback,
+            external_field=args.external_field,
+            add_noise=args.add_noise
+        )
+
+        visualize_temporal_evolution(steps, ent_hist, decoh_hist, fid_hist, avg_curv_hist, save_fig=True, output_dir=output_dir)
+
+        if args.analysis:
+            analyze_frequency_spectrum(ent_hist, sampling_rate=1.0, output_dir=output_dir, label="entanglement")
+            analyze_correlation(avg_curv_hist, ent_hist, label_x="Average Curvature", label_y="Average Entanglement", output_dir=output_dir)
+
+        # Future Steps (Placeholders):
+        # - If dimension == 4: implement a time-evolving 3D lattice (4D)
+        # - Integrate machine learning training steps offline using saved data.
+        # - Perform topological analysis on the final curvature lattice.
+        # - Use adaptive_refinement again at final timestep if needed.
+
+    except KeyboardInterrupt:
+        logging.warning("Simulation interrupted by user. Exiting gracefully...")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+    finally:
+        plt.close('all')  # Ensure all plot windows are closed
+
+if __name__ == "__main__":
+    main()
